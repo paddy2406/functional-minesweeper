@@ -1,0 +1,118 @@
+#lang racket
+
+(require 2htdp/image)
+(require 2htdp/universe)
+
+(define img-list (list . . . . . . . . . . . . . . . .))
+
+;Konstanten
+(define single-tile-size 25)
+(define field-size 20)
+(define chance-to-spawn-bomb 0.17)
+; ----
+
+; wie map, gibt allerdings den index mit
+(define (index-map f lst (i 0))
+  (cond
+    ((null? lst) '())
+    (else (cons (f (first lst) i) (index-map f (rest lst) (add1 i))))))
+
+; list-ref für matrix
+(define (2d-list-ref lst x y)
+  (list-ref (list-ref lst y) x))
+
+; testet ob Klick im Feld
+(define (inside-field? x y)
+   (and (> x 0) (> y 0) (< x (* field-size single-tile-size)) (< y (* field-size single-tile-size))))
+
+; testet ob Klick im Menü
+(define (inside-menu? x y)
+   (and (> x 0) (> y 0) (< x (* field-size single-tile-size)) (> y (* field-size single-tile-size)) (< y (+ (* field-size single-tile-size) 25))))
+
+;hohlt den wert aus dem Base grid, wenn der Index existiert
+(define (grid-value grid x y)
+  (if (or (< x 0) (< y 0) (> x (sub1 field-size)) (> y (sub1 field-size)))
+      0
+      (2d-list-ref grid x y)))
+
+(define surrounding-tiles '((-1 . -1) (0 . -1) (1 . -1) (-1 . 0) (1 . 0) (-1 . 1) (0 . 1) (1 . 1)))
+;zählt wieviele Bomben sich um einem Feld befinden
+(define (count-surrounding x y grid)
+  (foldl (lambda (a acc) (+ acc (grid-value grid (+ x (car a)) (+ y (cdr a))))) 0 surrounding-tiles))
+
+(define (won? grid)
+(empty? (filter (lambda (row) (not (empty? (filter (lambda (tile) (not (or (and (equal? (car tile) 9) (list-ref tile 2)) (and (not (equal? (car tile) 9)) (list-ref tile 1))))) row))))grid)))
+
+;generiert ein Spielfeld mit größe n*n
+(define (gen-grid n)
+  (define base-grid
+    (build-list n (lambda (x) (build-list n (lambda (x) (if (< (random) chance-to-spawn-bomb) 1 0))))))
+  (index-map (lambda (row i) (index-map (lambda (tile j) (list (if(equal? (2d-list-ref base-grid i j) 0) (count-surrounding i j base-grid) 9) #f #f)) row)) base-grid))
+
+;deckt alle verbundenen Felder mit Nullen auf
+(define (uncover-zeros grid x y)
+  (define (get-surrounding-tiles tile already-found)
+    (if (equal? (car (2d-list-ref grid (car tile) (cdr tile))) 0)
+        (foldl (lambda (a acc) (if (or (equal? (grid-value grid (+ (car tile) (car a)) (+ (cdr tile) (cdr a))) 0) (findf (lambda (x) (equal? x (cons (+ (car tile) (car a)) (+ (cdr tile) (cdr a))))) already-found))
+                                   acc
+                                   (cons (cons (+ (car tile) (car a)) (+ (cdr tile) (cdr a))) acc))) '() surrounding-tiles)
+        '()))
+  
+  (define (get-outer-tiles current-tiles old-tiles)
+    (define (inner current new-tiles)
+      (if (empty? current)
+          new-tiles
+          (inner (cdr current) (append (get-surrounding-tiles (car current) (append current-tiles old-tiles new-tiles)) new-tiles))))
+    (inner current-tiles '()))
+        
+  (define (find-zeros acc)
+    (if (empty? (car acc))
+        acc
+        (find-zeros (cons (get-outer-tiles (car acc) (car (cdr acc))) acc))))
+  (define tiles-to-uncover (apply append (find-zeros (list (list (cons x y)) '()))))
+  (index-map (lambda (row i) (index-map (lambda (tile j) (if (findf (lambda (x) (equal? (cons j i) x)) tiles-to-uncover)
+                                                                              (list (car tile) #t #f)
+                                                                              tile)) row)) grid))
+
+(define (make-menu flag-active won)
+  (overlay  (beside (list-ref img-list 12) (rectangle 50 25 "solid" "lightgrey") (list-ref img-list (cond (won 15) (flag-active 14) (else 13)))) (rectangle (* field-size single-tile-size) 25 "solid" "lightgrey")))
+
+(define (draw-playing-field w)
+  (define playing-field (apply above (map (lambda (row)
+                      (apply beside (map (lambda (tile) (cond ((and (not (list-ref tile 1)) (list-ref tile 2)) (list-ref img-list 11))
+                                                               ((not (list-ref tile 1)) (list-ref img-list 10))
+                                                               (else (list-ref img-list (car tile)))))
+                                           row))) (car w))))
+  (above playing-field (make-menu (list-ref w 1) (list-ref w 2))))
+
+(define (click-tile grid x y flag-in-hand)
+  (cond ((car (cdr (2d-list-ref grid x y))) grid)
+        (flag-in-hand (index-map (lambda (row i) (index-map (lambda (tile j) (if (and (equal? x j) (equal? y i))
+                                                                              (list (car tile) #f (not (list-ref tile 2)))
+                                                                              tile)) row)) grid))
+        ((list-ref (2d-list-ref grid x y) 2) grid)
+        ((equal? (car (2d-list-ref grid x y)) 9) (map (lambda (row) (map (lambda (tile) (list (car tile) #t #f)) row)) grid))
+        ((equal? (car (2d-list-ref grid x y)) 0) (uncover-zeros grid x y)) 
+         (else (index-map (lambda (row i) (index-map (lambda (tile j) (if (and (equal? x j) (equal? y i))
+                                                                               (list (car tile) #t #f)
+                                                                               tile)) row)) grid))))
+
+(define (click-menu w x)
+  (cond ((and (> x (- (/ (* field-size single-tile-size) 2) 50)) (< x (- (/ (* field-size single-tile-size) 2) 25))) (list (gen-grid field-size) #f #f))
+        ((and (> x (+ (/ (* field-size single-tile-size) 2) 25)) (< x (+ (/ (* field-size single-tile-size) 2) 50))) (list (car w) (not (list-ref w 1)) (list-ref w 2)))
+        (else w)))
+
+(define (click w x y me)
+  (if (mouse=? me "button-down")
+      (cond ((and (inside-field? x y) (not (list-ref w 2))) (let ((new-grid (click-tile (car w) (floor (/ x single-tile-size)) (floor (/ y single-tile-size)) (list-ref w 1))))
+                                   (if (won? new-grid)
+                                       (list new-grid #f #t)
+                                       (list new-grid (list-ref w 1) (list-ref w 2)))))                     
+            ((inside-menu? x y) (click-menu w x))
+            (else w)) w))
+
+(big-bang (list (gen-grid field-size) #f #f)
+  (to-draw draw-playing-field)
+  (on-mouse click)
+  (name "Minesweeper - Patrick Junker"))
+
